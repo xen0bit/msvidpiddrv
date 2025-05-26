@@ -7,9 +7,11 @@ import urllib.parse
 from pprint import pprint
 from tqdm import tqdm
 import sqlite3
+import concurrent.futures
 
 
-def getDownload(uid):
+def getDownload(result):
+    uid = result["updateID"]
     body = f"updateIDs=%5B%7B%22size%22%3A0%2C%22languages%22%3A%22%22%2C%22uidInfo%22%3A%22{uid}%22%2C%22updateID%22%3A%22{uid}%22%7D%5D&updateIDsBlockedForImport=&wsusApiPresent=&contentImport=&sku=&serverName=&ssl=&portNumber=&version="
     resp = requests.post(
         "https://www.catalog.update.microsoft.com/DownloadDialog.aspx",
@@ -25,7 +27,7 @@ def getDownload(uid):
         value = infoparts[1].replace("'", "").strip()
         fileinfo[key] = value
 
-    return fileinfo
+    return result | fileinfo
 
 
 def parseSearch(resp):
@@ -94,11 +96,9 @@ def fetchUpdates(dbconn, vid, pid):
         if len(results) == 0:
             break
         print(f"Scraping page: {page}")
-        for result in tqdm(results):
-            fileinfo = getDownload(result["updateID"])
-            # Replace with a db insert
-            # updates.append(result | fileinfo)
-            t = result | fileinfo
+        with concurrent.futures.ThreadPoolExecutor(max_workers=25) as executor:
+            downloadResults = executor.map(getDownload, results)
+        for t in tqdm(list(downloadResults)):
             dbcur.execute(
                 """
                             INSERT OR IGNORE INTO updates (title, products, classification, lastUpdated, version, size, updateID, architectures, defaultFileNameLength, digest, fileName, languages, longLanguages, sha256, url) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -123,30 +123,20 @@ def fetchUpdates(dbconn, vid, pid):
             )
         page += 1
 
-    # return updates
-
 
 def main():
     parser = argparse.ArgumentParser(description="Process vid and pid arguments.")
     # parser.add_argument('vid', type=str, help='Vendor ID', default='1532')
     # parser.add_argument('pid', type=str, help='Product ID', default='0241')
     args = parser.parse_args()
-
-    args.vid = "1532"
-    args.pid = "0241"
     args.db = "updates.db"
 
     with sqlite3.connect(args.db) as con:
-        # print(f"VID: {args.vid}")
-        # print(f"PID: {args.pid}")
-
         ct = 0
         with open("vidpid.csv", "r") as f:
             for line in f:
-                if ct >= 100:
-                    break
                 vid, pid = line.strip().split(",")
-                print(vid, pid)
+                print(f"VID: {vid}, PID: {pid}")
                 fetchUpdates(con, vid, pid)
                 ct += 1
 
